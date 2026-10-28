@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: smartcompress
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    autoDeploy: true
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: SMARTCOMPRESS_DATA_DIR
+        value: /var/lib/smartcompress
+      - key: SMARTCOMPRESS_MAX_UPLOAD_MB
+        value: "64"
+      - key: SMARTCOMPRESS_MAX_IMAGE_PIXELS
+        value: "16000000"
+      - key: SMARTCOMPRESS_MAX_JOBS
+        value: "1"
+      - key: SMARTCOMPRESS_RETENTION_HOURS
+        value: "2"
+      - key: SMARTCOMPRESS_JOB_TIMEOUT_SECONDS
+        value: "600"
