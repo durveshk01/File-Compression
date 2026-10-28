@@ -1,0 +1,15 @@
+services:
+  smartcompress:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      SMARTCOMPRESS_MAX_UPLOAD_MB: "256"
+      SMARTCOMPRESS_RETENTION_HOURS: "2"
+      SMARTCOMPRESS_MAX_JOBS: "2"
+      SMARTCOMPRESS_CORS_ORIGINS: "http://localhost:8000"
+    volumes:
+      - smartcompress-data:/var/lib/smartcompress
+    restart: unless-stopped
+volumes:
+  smartcompress-data:
