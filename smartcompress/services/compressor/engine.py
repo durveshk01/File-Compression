@@ -144,7 +144,7 @@ def detect(path: Path, filename: str) -> dict:
         try:
             with Image.open(path) as image:
                 image.verify()
-        except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+        except (UnidentifiedImageError, OSError, SyntaxError, Image.DecompressionBombError) as exc:
             raise CompressionError(f"This image is damaged, incomplete, or exceeds the safe {MAX_IMAGE_PIXELS // 1_000_000} megapixel limit.") from exc
     supported = actual in IMAGE_FORMATS or actual in {"PDF", "ZIP", "DOCX", "PPTX", "XLSX", "ODT", "ODS", "ODP", "EPUB", "MP4", "MOV", "MKV", "WebM", "AVI", "MP3", "WAV", "FLAC", "M4A", "AAC", "OGG"}
     return {"format": actual, "extension": ext, "supported": supported, "category": category(actual), "warning": format_warning(actual)}
@@ -175,7 +175,7 @@ def _image_candidates(src: Path, outdir: Path, target: int | None, lossless: boo
         im = Image.open(src)
         im.verify()
         im = Image.open(src)
-    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+    except (UnidentifiedImageError, OSError, SyntaxError, Image.DecompressionBombError) as exc:
         raise CompressionError(f"This image is damaged, unsupported, or exceeds the safe {MAX_IMAGE_PIXELS // 1_000_000} megapixel limit.") from exc
     if getattr(im, "n_frames", 1) > 1:
         if lossless:
