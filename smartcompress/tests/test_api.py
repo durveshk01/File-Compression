@@ -30,6 +30,22 @@ def test_upload_job_status_and_download(tmp_path, monkeypatch):
         assert result.status_code == 200 and len(result.content) > 100
         preview = client.get(f"/api/v1/compression-jobs/{auth['job_id']}/preview", headers=headers)
         assert preview.status_code == 200 and preview.headers["content-type"].startswith("image/jpeg")
+        assert preview.headers["x-frame-options"] == "SAMEORIGIN"
+        assert preview.headers["content-security-policy"] == "frame-ancestors 'self'"
+
+
+
+
+def test_corrupt_image_upload_returns_validation_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "DATA", tmp_path)
+    api.uploads.clear()
+    buffer = io.BytesIO(); Image.new("RGB", (8, 8), (40, 80, 120)).save(buffer, "PNG")
+    broken = bytearray(buffer.getvalue())
+    broken[-5] ^= 0xFF
+    with TestClient(api.app) as client:
+        response = client.post("/api/v1/files", files={"file": ("broken.png", bytes(broken), "image/png")})
+    assert response.status_code == 422
+    assert "damaged" in response.json()["detail"].lower()
 
 
 def test_invalid_scoped_token_does_not_reveal_job(tmp_path, monkeypatch):
