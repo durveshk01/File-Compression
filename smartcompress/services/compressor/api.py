@@ -77,6 +77,10 @@ async def secure_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    # Preview is token-authorized and embedded in the same-origin dialog.
+    if request.url.path.startswith("/api/v1/compression-jobs/") and request.url.path.endswith("/preview"):
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'self'"
     response.headers["Cache-Control"] = "no-store"
     return response
 
