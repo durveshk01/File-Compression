@@ -180,11 +180,17 @@ for (const event of ['dragleave','drop']) dropzone.addEventListener(event, e => 
 dropzone.addEventListener('drop', e => addFiles(e.dataTransfer.files));
 $('#theme-toggle').addEventListener('click', () => {
   const dark = document.documentElement.dataset.theme !== 'dark'; document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-  $('#theme-toggle').setAttribute('aria-label', `Switch to ${dark ? 'light' : 'dark'} theme`); localStorage.setItem('smartcompress-theme', dark ? 'dark' : 'light');
+  $('#theme-toggle').setAttribute('aria-label', `Switch to ${dark ? 'light' : 'dark'} theme`);
+  $('#theme-toggle').setAttribute('aria-pressed', String(dark));
+  localStorage.setItem('smartcompress-theme', dark ? 'dark' : 'light');
 });
 $('#close-preview').addEventListener('click', () => $('#preview-dialog').close());
 $('#preview-dialog').addEventListener('close', () => { $('#preview-content').replaceChildren(); if (state.previewURLs) state.previewURLs.forEach(URL.revokeObjectURL); state.previewURLs = null; });
-if (localStorage.getItem('smartcompress-theme') === 'dark') document.documentElement.dataset.theme = 'dark';
+if (localStorage.getItem('smartcompress-theme') === 'dark') {
+  document.documentElement.dataset.theme = 'dark';
+  $('#theme-toggle').setAttribute('aria-label', 'Switch to light theme');
+  $('#theme-toggle').setAttribute('aria-pressed', 'true');
+}
 async function loadFormats() {
   try { const res = await fetch(`${API}/formats`); const data = await res.json(); state.maxUploadBytes = data.limits.max_upload_bytes; $('.drop-foot').innerHTML = `UP TO ${size(state.maxUploadBytes).toUpperCase()} PER FILE <span>·</span> YOUR FILES ARE NEVER PUBLIC`; $('#format-detail').textContent = data.formats.map(x => `${x.category} — ${x.support}: ${x.note}`).join(' · '); }
   catch { $('#format-detail').textContent = 'Image, PDF, audio and video availability depends on the engines installed on this server.'; }
