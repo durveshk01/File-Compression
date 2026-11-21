@@ -13,6 +13,10 @@ python -m uvicorn services.compressor.api:app --host 127.0.0.1 --port 8000
 
 Open `http://127.0.0.1:8000`; API docs are at `/docs`.
 
+Alternatively, `./start.ps1` creates `.smartcompress-venv`, installs locked runtime
+packages and starts the server. It avoids stale `.venv` installations. Pass
+`-Port 8080` to select another local port.
+
 Linux: create and activate a Python virtual environment, install `requirements-dev.txt`, install `ffmpeg` from the OS package manager if you need media support, then run the same Uvicorn module command.
 
 ## Locked install
@@ -50,4 +54,5 @@ The root `render.yaml` defines a Singapore free Docker web service. It builds th
 - **Target not reached:** the response contains measured actual bytes. The limit may conflict with minimum bitrate, source complexity, lossless constraints or supported operations.
 - **Unsupported type or mismatch:** rename the file only if its actual content is that format. Changing an extension does not convert data.
 - **Upload or job expired:** files and in-memory job tokens expire after the configured retention; upload again. Restarting the process also invalidates tokens.
+- **Python environment points to a missing executable:** use `./start.ps1` to create a separate environment, or recreate your virtual environment with an installed Python version.
 - **CORS failure:** use the same origin as the frontend or set the exact UI origin in `SMARTCOMPRESS_CORS_ORIGINS`.

@@ -6,17 +6,20 @@ import os
 import re
 import secrets
 import shutil
+import threading
 import time
 import uuid
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import BackgroundTasks, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from .engine import MAX_IMAGE_PIXELS, CompressionError, compress, detect
 
@@ -34,32 +37,48 @@ locks = asyncio.Semaphore(MAX_JOBS)
 ip_events: dict[str, list[float]] = {}
 
 
+def _cleanup():
+    cutoff = time.time() - RETENTION
+    active = {key for key, job in jobs.items() if job["status"] in {"queued", "processing"} or job.get("worker_active")}
+    protected = active | {Path(jobs[key]["source_path"]).parent.name for key in active if "source_path" in jobs[key]}
+    protected |= {key for key, upload in uploads.items() if upload.get("uploading")}
+    for entry in DATA.iterdir():
+        try:
+            if entry.is_dir() and entry.name not in protected and entry.stat().st_mtime < cutoff:
+                shutil.rmtree(entry, ignore_errors=True)
+        except OSError:
+            pass
+    for table in (uploads, jobs):
+        expired = [key for key, record in table.items() if key not in protected and record.get("finished_at", record.get("created_at", time.time())) < cutoff]
+        for key in expired:
+            table.pop(key, None)
+    now = time.monotonic()
+    for ip in list(ip_events):
+        if not ip_events[ip] or now - ip_events[ip][-1] >= 60:
+            ip_events.pop(ip, None)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global locks
+    locks = asyncio.Semaphore(MAX_JOBS)
     async def cleanup_loop():
         while True:
             await asyncio.sleep(600)
-            cutoff = time.time() - RETENTION
-            for entry in DATA.iterdir():
-                try:
-                    if entry.is_dir() and entry.stat().st_mtime < cutoff: shutil.rmtree(entry, ignore_errors=True)
-                except OSError:
-                    pass
-            for table in (uploads, jobs):
-                expired = [key for key, record in table.items() if record.get("created_at", time.time()) < cutoff]
-                for key in expired: table.pop(key, None)
-    cutoff = time.time() - RETENTION
-    for entry in DATA.iterdir():
-        try:
-            if entry.is_dir() and entry.stat().st_mtime < cutoff: shutil.rmtree(entry, ignore_errors=True)
-        except OSError:
-            pass
+            _cleanup()
+    _cleanup()
     cleaner = asyncio.create_task(cleanup_loop())
-    yield
-    cleaner.cancel()
+    try:
+        yield
+    finally:
+        cleaner.cancel()
+        try:
+            await cleaner
+        except asyncio.CancelledError:
+            pass
 
 
-app = FastAPI(title="SmartCompress API", version="1.0.0", description="Format-aware compression API with scoped temporary file tokens. Files are automatically deleted after the configured retention period.", lifespan=lifespan)
+app = FastAPI(title="SmartCompress API", version="1.1.0", description="Format-aware compression API with scoped temporary file tokens. Files are automatically deleted after the configured retention period.", lifespan=lifespan)
 origins = [x.strip() for x in os.getenv("SMARTCOMPRESS_CORS_ORIGINS", "http://localhost:8000").split(",") if x.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type", "Authorization"], allow_credentials=False)
 
@@ -69,14 +88,26 @@ async def secure_headers(request: Request, call_next):
     ip = request.client.host if request.client else "unknown"
     now = time.monotonic()
     recent = [t for t in ip_events.get(ip, []) if now - t < 60]
-    if len(recent) >= 120:
-        return HTMLResponse("Too many requests. Please wait a minute.", status_code=429)
-    recent.append(now); ip_events[ip] = recent
+    # Frequent authenticated status polling must not exhaust upload/job quotas.
+    if request.method == "POST" and len(recent) >= 120:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"detail": "Too many requests. Please wait a minute."}, status_code=429, headers={"Retry-After": "60"})
+    if request.method == "POST":
+        recent.append(now); ip_events[ip] = recent
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
-    response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; frame-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    if request.url.path in {"/docs", "/docs/oauth2-redirect", "/redoc"}:
+        # FastAPI's generated documentation uses CDN assets and inline startup code.
+        # This policy is limited to docs; uploads and the application stay under the strict policy.
+        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; style-src 'self' https://cdn.jsdelivr.net https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://fastapi.tiangolo.com; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    # The preview endpoint is token-authorized and intentionally embedded in
+    # the same-origin preview dialog. Keep the rest of the app non-frameable.
+    if request.url.path.startswith("/api/v1/compression-jobs/") and request.url.path.endswith("/preview"):
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        response.headers["Content-Security-Policy"] = "default-src 'none'; sandbox; frame-ancestors 'self'"
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -95,7 +126,7 @@ def _safe_name(value: str) -> str:
 
 
 def _authorized(record: dict | None, token: str | None):
-    if not record or not token or not secrets.compare_digest(record["token"], token):
+    if not record or not token or not secrets.compare_digest(record.get("token", ""), token):
         raise HTTPException(404, "This file or job was not found or its access token is invalid.")
 
 
@@ -119,6 +150,8 @@ async def upload_file(file: UploadFile = File(...)):
     name = _safe_name(file.filename or "uploaded-file")
     path = directory / "source.bin"
     size = 0
+    # The folder is protected while content validation may take time.
+    uploads[upload_id] = {"created_at": time.time(), "uploading": True}
     try:
         with path.open("wb") as target:
             while True:
@@ -134,6 +167,7 @@ async def upload_file(file: UploadFile = File(...)):
         uploads[upload_id] = record
         return {"upload_id": upload_id, "upload_token": token, "filename": name, "size": size, **info}
     except BaseException:
+        uploads.pop(upload_id, None)
         shutil.rmtree(directory, ignore_errors=True)
         raise
     finally:
@@ -145,10 +179,12 @@ async def _process(job_id: str, upload: dict, target_bytes: int | None, mode: st
     try:
         async with locks:
             if job["cancel"].is_set(): job["status"] = "cancelled"; return
-            job["status"] = "processing"; job["started_at"] = time.time()
+            job["status"] = "processing"; job["started_at"] = time.time(); job["worker_active"] = True
             result_dir = DATA / job_id / "result"
             result_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-            result = await asyncio.wait_for(asyncio.to_thread(compress, Path(upload["path"]), upload["filename"], result_dir, target_bytes, mode, JOB_TIMEOUT, job["cancel"].is_set), timeout=JOB_TIMEOUT + 5)
+            # Hold the worker slot until the thread has actually exited. A timed-out
+            # asyncio wrapper cannot stop a running encoder thread.
+            result = await asyncio.to_thread(compress, Path(upload["path"]), upload["filename"], result_dir, target_bytes, mode, JOB_TIMEOUT, job["cancel"].is_set)
             if job["cancel"].is_set(): job["status"] = "cancelled"; return
             original_size = upload["size"]
             output = Path(result["path"])
@@ -156,6 +192,13 @@ async def _process(job_id: str, upload: dict, target_bytes: int | None, mode: st
                 raise CompressionError("The output failed a safety check.")
             final_size = output.stat().st_size
             extension = Path(upload["filename"]).suffix.lstrip(".") if output == Path(upload["path"]) else output.suffix.lstrip(".")
+            if output == Path(upload["path"]):
+                owned_output = result_dir / ("original." + extension)
+                await asyncio.to_thread(shutil.copyfile, output, owned_output)
+                output = owned_output
+            if job["cancel"].is_set():
+                job["status"] = "cancelled"
+                return
             job.update(status="completed", result_path=str(output), output_name=_safe_name(Path(upload["filename"]).stem + "." + extension), output_format=result["format"], message=result["message"], warnings=result["warnings"], target_reached=result["target_reached"], original_size=original_size, final_size=final_size, duration_ms=round((time.time() - job["started_at"]) * 1000), target_bytes=target_bytes, iterations=result["iterations"])
     except asyncio.TimeoutError:
         job.update(status="failed", error="This file took too long to process. Try a smaller file or a faster format.")
@@ -165,6 +208,12 @@ async def _process(job_id: str, upload: dict, target_bytes: int | None, mode: st
         # Detailed diagnostics remain server-side and exclude file bytes/metadata.
         print(f"SmartCompress worker error: {type(exc).__name__}")
         job.update(status="failed", error="Processing failed unexpectedly. Your original file is still available to try again.")
+    finally:
+        job["worker_active"] = False
+        job["finished_at"] = time.time()
+        directory = DATA / job_id
+        if directory.exists():
+            os.utime(directory, None)
 
 
 @app.post("/api/v1/compression-jobs", status_code=202, tags=["jobs"])
@@ -179,7 +228,7 @@ async def create_job(body: JobRequest, background: BackgroundTasks):
     _authorized(upload, body.upload_token)
     if not upload["supported"]: raise HTTPException(422, f"{upload['format']} files are detected but cannot be safely compressed by this installation.")
     job_id, token = secrets.token_hex(16), secrets.token_urlsafe(32)
-    record = {"id": job_id, "token": token, "status": "queued", "created_at": time.time(), "cancel": __import__("threading").Event(), "filename": upload["filename"], "category": upload["category"], "format": upload["format"], "size": upload["size"]}
+    record = {"id": job_id, "token": token, "status": "queued", "created_at": time.time(), "cancel": threading.Event(), "source_path": upload["path"], "filename": upload["filename"], "category": upload["category"], "format": upload["format"], "size": upload["size"]}
     jobs[job_id] = record
     background.add_task(_process, job_id, upload, body.target_bytes, body.mode)
     return {"job_id": job_id, "job_token": token, "status": "queued", "events_url": f"/api/v1/compression-jobs/{job_id}/events"}
@@ -233,32 +282,54 @@ async def preview_job(job_id: str, authorization: str | None = Header(default=No
     return FileResponse(job["result_path"], media_type=media_type, headers={"Content-Disposition": f"inline; filename*=UTF-8''{quote(job['output_name'])}", "Content-Security-Policy": "default-src 'none'; sandbox"})
 
 
+class BatchItem(BaseModel):
+    job_id: str = Field(min_length=32, max_length=32, pattern="^[a-f0-9]+$")
+    job_token: str = Field(min_length=32, max_length=64)
+
+
 class BatchRequest(BaseModel):
-    jobs: list[dict] = Field(min_length=1, max_length=50)
+    jobs: list[BatchItem] = Field(min_length=1, max_length=50)
 
 
 @app.post("/api/v1/compression-jobs/batch-download", tags=["jobs"])
 async def batch_download(body: BatchRequest):
-    import zipfile
-    from fastapi.responses import StreamingResponse
-    import io
-    stream = io.BytesIO()
-    with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-        for item in body.jobs:
-            job = _job_auth(str(item.get("job_id", "")), item.get("job_token"))
-            if job["status"] == "completed" and Path(job.get("result_path", "")).is_file(): archive.write(job["result_path"], job["output_name"])
-    stream.seek(0)
-    if stream.getbuffer().nbytes < 22: raise HTTPException(404, "No completed results were found.")
-    return StreamingResponse(stream, media_type="application/zip", headers={"Content-Disposition": "attachment; filename=smartcompress-results.zip"})
+    selected = []
+    for item in body.jobs:
+        job = _job_auth(item.job_id, item.job_token)
+        if job["status"] != "completed" or not Path(job.get("result_path", "")).is_file():
+            raise HTTPException(409, "A selected result is not ready or has expired.")
+        selected.append(job)
+    directory = DATA / uuid.uuid4().hex
+    directory.mkdir(mode=0o700)
+    path = directory / "smartcompress-results.zip"
+    def write_archive():
+        used = set()
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
+            for job in selected:
+                name = job["output_name"]
+                original = Path(name)
+                index = 2
+                while name.casefold() in used:
+                    name = f"{original.stem} ({index}){original.suffix}"
+                    index += 1
+                used.add(name.casefold())
+                archive.write(job["result_path"], name)
+    try:
+        await asyncio.to_thread(write_archive)
+    except OSError as exc:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise HTTPException(409, "A result expired while preparing the ZIP. Compress it again.") from exc
+    return FileResponse(path, media_type="application/zip", filename=path.name, background=BackgroundTask(shutil.rmtree, directory, ignore_errors=True))
 
 
 @app.get("/api/v1/formats", tags=["formats"])
 async def formats():
+    media_available = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
     entries = [
         {"category": "Images", "formats": ["JPEG", "PNG", "WebP", "GIF", "BMP", "TIFF", "ICO"], "support": "Full", "note": "Pillow encoders; animated GIF retained. AVIF/HEIC require an optional Pillow codec and are disabled here."},
         {"category": "PDF", "formats": ["PDF"], "support": "Partial", "note": "PyMuPDF structural optimization. Embedded-image downsampling and OCR are not included."},
-        {"category": "Video", "formats": ["MP4", "MOV", "MKV", "WebM", "AVI"], "support": "Full", "note": "FFmpeg H.264/AAC CPU encoding; output MP4. Available codecs depend on the installed FFmpeg build."},
-        {"category": "Audio", "formats": ["MP3", "WAV", "FLAC", "M4A", "AAC", "OGG"], "support": "Partial", "note": "FFmpeg MP3 output; lossless audio stays transcoded at high bitrate, not source-quality restoration."},
+        {"category": "Video", "formats": ["MP4", "MOV", "MKV", "WebM", "AVI"], "support": "Full" if media_available else "Unavailable", "note": "FFmpeg H.264/AAC CPU encoding; output MP4. Lossless mode retains the original. Install FFmpeg/ffprobe for media support."},
+        {"category": "Audio", "formats": ["MP3", "WAV", "FLAC", "M4A", "AAC", "OGG"], "support": "Partial" if media_available else "Unavailable", "note": "FFmpeg MP3 output; lossless mode retains the original unchanged. Install FFmpeg/ffprobe for media support."},
         {"category": "Documents and archives", "formats": ["ZIP", "DOCX", "PPTX", "XLSX", "ODT", "ODS", "ODP", "EPUB"], "support": "Partial", "note": "Safe ZIP-container recompression while preserving package members; archive expansion safety limits apply."},
         {"category": "Other", "formats": ["SVG", "TAR", "GZIP", "7Z", "HEIC", "HEIF"], "support": "Unsupported", "note": "Detected where possible; a safe adapter is not enabled in this build."},
     ]

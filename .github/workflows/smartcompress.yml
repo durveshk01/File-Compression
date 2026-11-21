@@ -1,0 +1,67 @@
+name: SmartCompress checks
+
+on:
+  push:
+    paths: ['smartcompress/**', '.github/workflows/smartcompress.yml']
+  pull_request:
+    paths: ['smartcompress/**', '.github/workflows/smartcompress.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compressor:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: smartcompress
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: python -m pip install --require-hashes -r requirements.lock
+      - run: python -m pip install 'pytest>=8,<10' 'httpx>=0.27,<1' ruff
+      - run: python -m pytest -q -p no:cacheprovider
+      - run: python -m ruff check services tests --select F
+      - run: python -m compileall -q services tests
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: npm run check && npm run test:browser
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-screenshots
+          path: smartcompress/.audit/browser-*.png
+          if-no-files-found: ignore
+
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: smartcompress/android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - run: ./gradlew --no-daemon assembleDebug lintDebug
+      - run: javac -d ../.audit/java-tests app/src/main/java/com/smartcompress/app/DownloadRequest.java ../tests/DownloadRequestTest.java
+      - run: java -cp ../.audit/java-tests com.smartcompress.app.DownloadRequestTest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SmartCompress-debug-apk
+          path: smartcompress/android/app/build/outputs/apk/debug/app-debug.apk

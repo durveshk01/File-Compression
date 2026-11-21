@@ -1,26 +1,36 @@
 from __future__ import annotations
 
-import io
 import json
 import os
-import re
 import shutil
 import subprocess
 import tarfile
 import threading
 import time
 import zipfile
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-import fitz
+import pymupdf as fitz
 from PIL import Image, ImageFile, ImageOps, UnidentifiedImageError
 
 MAX_IMAGE_PIXELS = max(1_000_000, int(os.getenv("SMARTCOMPRESS_MAX_IMAGE_PIXELS", "80000000")))
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 ImageFile.LOAD_TRUNCATED_IMAGES = False
 _clock = threading.local()
+PACKAGE_MIMES = {
+    b"application/vnd.oasis.opendocument.text": "ODT",
+    b"application/vnd.oasis.opendocument.spreadsheet": "ODS",
+    b"application/vnd.oasis.opendocument.presentation": "ODP",
+    b"application/epub+zip": "EPUB",
+}
+
+
+def _check_budget(max_seconds: int, cancelled: Callable[[], bool]):
+    if cancelled():
+        raise CompressionError("Compression was cancelled.")
+    if time.monotonic() - _clock.started > max_seconds:
+        raise CompressionError("Compression timed out. Try a smaller file.")
 
 EXTENSIONS = {
     ".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WebP", ".gif": "GIF",
@@ -78,8 +88,11 @@ def detect(path: Path, filename: str) -> dict:
                 if "[Content_Types].xml" in names:
                     actual = "DOCX" if any(n.startswith("word/") for n in names) else "PPTX" if any(n.startswith("ppt/") for n in names) else "XLSX" if any(n.startswith("xl/") for n in names) else "Office package"
                 elif "mimetype" in names:
-                    actual = "EPUB" if "META-INF/container.xml" in names else "ODT/ODS/ODP"
-        except (OSError, zipfile.BadZipFile):
+                    entry = zf.getinfo("mimetype")
+                    if entry.file_size > 256 or entry.flag_bits & 1:
+                        raise CompressionError("The package mimetype is unsafe or encrypted.")
+                    actual = PACKAGE_MIMES.get(zf.read(entry).strip(), "ZIP")
+        except (OSError, zipfile.BadZipFile, RuntimeError):
             raise CompressionError("This ZIP file is damaged or incomplete.")
     if actual is None and ext in {".mp4", ".mov", ".m4a"}:
         with path.open("rb") as stream:
@@ -143,8 +156,10 @@ def detect(path: Path, filename: str) -> dict:
     if actual in IMAGE_FORMATS:
         try:
             with Image.open(path) as image:
+                if image.width * image.height > MAX_IMAGE_PIXELS:
+                    raise CompressionError("This image exceeds the configured pixel limit.")
                 image.verify()
-        except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+        except (UnidentifiedImageError, OSError, SyntaxError, Image.DecompressionBombError) as exc:
             raise CompressionError(f"This image is damaged, incomplete, or exceeds the safe {MAX_IMAGE_PIXELS // 1_000_000} megapixel limit.") from exc
     supported = actual in IMAGE_FORMATS or actual in {"PDF", "ZIP", "DOCX", "PPTX", "XLSX", "ODT", "ODS", "ODP", "EPUB", "MP4", "MOV", "MKV", "WebM", "AVI", "MP3", "WAV", "FLAC", "M4A", "AAC", "OGG"}
     return {"format": actual, "extension": ext, "supported": supported, "category": category(actual), "warning": format_warning(actual)}
@@ -178,18 +193,27 @@ def _image_candidates(src: Path, outdir: Path, target: int | None, lossless: boo
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
         raise CompressionError(f"This image is damaged, unsupported, or exceeds the safe {MAX_IMAGE_PIXELS // 1_000_000} megapixel limit.") from exc
     if getattr(im, "n_frames", 1) > 1:
+        if im.format == "TIFF":
+            im.close()
+            return src, "The original multipage TIFF was retained to preserve all pages.", []
         if lossless:
+            im.close()
             return src, "Lossless only: the original animated image was retained unchanged.", []
+        if im.n_frames > 500 or im.width * im.height * im.n_frames > MAX_IMAGE_PIXELS:
+            im.close()
+            raise CompressionError("This animation exceeds the safe frame or total pixel limit. Try lossless mode to retain the original.")
         # Save as GIF with the original frame sequence intact.
         frames, durations = [], []
         loop = im.info.get("loop", 0)
         try:
-            for i in range(min(im.n_frames, 500)):
+            for i in range(im.n_frames):
+                _check_budget(max_seconds, cancelled)
                 im.seek(i); frames.append(im.convert("RGBA" if "transparency" in im.info else "RGB").copy()); durations.append(im.info.get("duration", 100))
         except (OSError, EOFError) as exc:
             raise CompressionError("This animated image could not be safely decoded.") from exc
         dest = outdir / "optimized.gif"
         frames[0].save(dest, format="GIF", save_all=True, append_images=frames[1:], optimize=True, duration=durations, loop=loop, disposal=2)
+        im.close()
         return dest, "Animation and frame timing preserved; palette optimization may change individual colors.", ["Camera/location metadata is not retained."]
     image = ImageOps.exif_transpose(im)
     source_format = im.format or "PNG"
@@ -197,12 +221,14 @@ def _image_candidates(src: Path, outdir: Path, target: int | None, lossless: boo
     preserve_transparency = "A" in image.getbands() or "transparency" in im.info
     out_format = "JPEG" if source_format == "JPEG" else "WEBP" if source_format == "WebP" else "PNG"
     if lossless and source_format in {"JPEG", "WebP"}:
+        im.close()
         return src, "Lossless only: this format cannot be recompressed without changing image data, so the original was retained.", []
-    image = image.convert("RGBA" if preserve_transparency else "RGB") if out_format != "PNG" else image.convert("RGBA" if preserve_transparency else "RGB")
+    image = image.convert("RGBA" if preserve_transparency else "RGB")
     if source_format not in {"JPEG", "PNG", "WebP"}: warnings.append(f"Output converted from {source_format} to {out_format}; original animation may not be preserved.")
-    if source_format == "PNG" and lossless:
+    if out_format == "PNG" and lossless:
         dest = outdir / "optimized.png"
         image.save(dest, format="PNG", optimize=True, compress_level=9, icc_profile=im.info.get("icc_profile"))
+        im.close()
         return dest, "Lossless PNG optimization preserves pixels and transparency.", warnings
     qualities = ([52] if smallest and not target else [22, 30, 40, 52, 64, 72, 80, 88, 95] if smallest else [88] if not target else [95, 88, 80, 72, 64, 52, 40, 30, 22]) if out_format != "PNG" else [100] if not target else [100, 90, 80, 70, 60, 45]
     # Lossy output explores quality and bounded image scaling. Always return the best measured candidate.
@@ -215,6 +241,7 @@ def _image_candidates(src: Path, outdir: Path, target: int | None, lossless: boo
             candidate_image.thumbnail((max(1, int(image.width * factor)), max(1, int(image.height * factor))), Image.Resampling.LANCZOS)
         for quality in qualities:
             if cancelled(): raise CompressionError("Compression was cancelled.")
+            _clock.iterations += 1
             dest = outdir / f"candidate-{int(factor*100)}-{quality}.{ 'jpg' if out_format == 'JPEG' else out_format.lower()}"
             options = {"format": out_format, "optimize": True}
             if out_format in {"JPEG", "WEBP"}:
@@ -227,12 +254,14 @@ def _image_candidates(src: Path, outdir: Path, target: int | None, lossless: boo
             except (OSError, ValueError) as exc:
                 raise CompressionError(f"The image encoder could not create a valid output ({type(exc).__name__}).") from exc
             size = dest.stat().st_size
-            if best is None or size < best[0]: best = (size, dest, f"Quality {quality}, {candidate_image.width} × {candidate_image.height}")
+            if best is None or size < best[0]: best = (size, dest, f"Quality {quality}, {candidate_image.width} Ã— {candidate_image.height}")
             if target and size <= target:
-                return dest, f"Target reached at quality {quality}, {candidate_image.width} × {candidate_image.height}.", warnings
+                im.close()
+                return dest, f"Target reached at quality {quality}, {candidate_image.width} Ã— {candidate_image.height}.", warnings
             if time.monotonic() - _clock.started > max_seconds: break
         if time.monotonic() - _clock.started > max_seconds: break
     assert best
+    im.close()
     if not target and best[0] >= src.stat().st_size:
         return src, "Optimization did not save space; the original was retained.", warnings
     return best[1], f"Best candidate: {best[2]}.", warnings
@@ -240,14 +269,13 @@ def _image_candidates(src: Path, outdir: Path, target: int | None, lossless: boo
 
 def _pdf(src: Path, outdir: Path) -> tuple[Path, str, list[str]]:
     try:
-        doc = fitz.open(src)
-        if doc.is_encrypted: raise CompressionError("This PDF is password protected. Unlock it and upload it again.")
-        if doc.page_count < 1 or doc.page_count > 5000: raise CompressionError("This PDF has an unsafe or unsupported page count.")
         dest = outdir / "optimized.pdf"
-        doc.save(dest, garbage=4, deflate=True, deflate_images=True, deflate_fonts=True, clean=True)
-        result = fitz.open(dest)
-        if result.page_count != doc.page_count: raise CompressionError("The optimized PDF did not pass page-count validation.")
-        result.close(); doc.close()
+        with fitz.open(src) as doc:
+            if doc.is_encrypted: raise CompressionError("This PDF is password protected. Unlock it and upload it again.")
+            if doc.page_count < 1 or doc.page_count > 5000: raise CompressionError("This PDF has an unsafe or unsupported page count.")
+            doc.save(dest, garbage=4, deflate=True, deflate_images=True, deflate_fonts=True, clean=True)
+            with fitz.open(dest) as result:
+                if result.page_count != doc.page_count: raise CompressionError("The optimized PDF did not pass page-count validation.")
         if dest.stat().st_size >= src.stat().st_size:
             return src, "Lossless structural optimization did not reduce the file; the original was retained.", ["Further reduction would require changing embedded media or content."]
         return dest, "PDF structure optimized; page count, text, and vectors retained.", []
@@ -262,21 +290,28 @@ def _zip(src: Path, filename: str, outdir: Path, max_seconds: int, cancelled: Ca
     try:
         with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dest, "w", allowZip64=True, compresslevel=9) as zout:
             infos = zin.infolist()
+            zout.comment = zin.comment
             if len(infos) > 10000 or sum(x.file_size for x in infos) > 2_000_000_000:
                 raise CompressionError("This archive exceeds safe entry-count or expanded-size limits.")
+            package = any(x.filename == "mimetype" and x.file_size <= 256 for x in infos)
+            if package:
+                infos = sorted(infos, key=lambda x: x.filename != "mimetype")
             for info in infos:
-                if cancelled(): raise CompressionError("Compression was cancelled.")
-                if time.monotonic() - _clock.started > max_seconds: break
+                _check_budget(max_seconds, cancelled)
                 if info.flag_bits & 1: raise CompressionError("Encrypted archives cannot be safely recompressed.")
                 if info.is_dir(): zout.writestr(info, b""); continue
                 if info.file_size > 256_000_000: raise CompressionError("An archive entry exceeds the 256 MB safety limit.")
                 # No extraction to disk: member paths are never used as filesystem paths.
                 clone = zipfile.ZipInfo(info.filename, info.date_time)
-                clone.compress_type = zipfile.ZIP_DEFLATED
+                clone.compress_type = zipfile.ZIP_STORED if package and info.filename == "mimetype" else zipfile.ZIP_DEFLATED
                 clone.external_attr, clone.create_system, clone.flag_bits = info.external_attr, info.create_system, info.flag_bits & ~1
+                clone.comment = info.comment
+                # A stored mimetype must have no extra fields in EPUB/ODF.
+                clone.extra = b""
                 copied = 0
                 with zin.open(info) as member, zout.open(clone, "w") as output:
                     while True:
+                        _check_budget(max_seconds, cancelled)
                         chunk = member.read(1024 * 1024)
                         if not chunk: break
                         copied += len(chunk)
@@ -284,6 +319,8 @@ def _zip(src: Path, filename: str, outdir: Path, max_seconds: int, cancelled: Ca
                         output.write(chunk)
                 if copied != info.file_size: raise CompressionError("An archive member did not match its declared size.")
         with zipfile.ZipFile(dest) as check:
+            if check.namelist() != [x.filename for x in infos]:
+                raise CompressionError("The archive failed member-count validation.")
             bad = check.testzip()
             if bad: raise CompressionError("The archive failed output integrity validation.")
         return dest, "Archive contents validated. Already-compressed members may not shrink.", []
@@ -302,7 +339,6 @@ def _ffmpeg(src: Path, outdir: Path, kind: str, target: int | None, mode: str, m
     ext = ".mp4" if video else ".mp3"
     warning = "" if video else "Audio is converted to MP3; this does not restore quality from a lossy original."
     stream_types = {s.get("codec_type") for s in meta.get("streams", [])}
-    candidates: list[tuple[int, Path]] = []
     attempts = 0
     fractions = [.55, .42, .3, .22, .16] if mode == "smallest" else [.95, .82, .7, .58, .45]
     if video:
@@ -329,14 +365,20 @@ def _ffmpeg(src: Path, outdir: Path, kind: str, target: int | None, mode: str, m
             cmd = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src), "-vn", "-c:a", "libmp3lame", "-b:a", str(bitrate), "-progress", "pipe:1", "-nostats", str(dest)]
         try:
             process = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=False)
-            assert process.stdout
-            for line in process.stdout:
-                if cancelled(): process.kill(); raise CompressionError("Compression was cancelled.")
-                if time.monotonic() - _clock.started > max_seconds: process.kill(); raise CompressionError("Media conversion timed out. Try a shorter or smaller file.")
-            process.wait(timeout=5)
+            while True:
+                try:
+                    _check_budget(max_seconds, cancelled)
+                    process.communicate(timeout=.2)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
             if process.returncode != 0: raise CompressionError("FFmpeg could not encode this media file.")
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise CompressionError("The media converter failed. Check that FFmpeg is installed and the disk has free space.") from exc
+        finally:
+            if 'process' in locals() and process.poll() is None:
+                process.kill()
+                process.communicate()
         attempts += 1
         if not dest.exists() or dest.stat().st_size == 0: raise CompressionError("The encoder did not produce a valid output.")
         size = dest.stat().st_size
@@ -350,12 +392,13 @@ def _ffmpeg(src: Path, outdir: Path, kind: str, target: int | None, mode: str, m
 
 def compress(src: Path, filename: str, outdir: Path, target: int | None, mode: str, max_seconds: int, cancelled: Callable[[], bool] = lambda: False) -> dict:
     _clock.started = time.monotonic()
+    _clock.iterations = 0
     info = detect(src, filename)
     if not info["supported"]: raise CompressionError(f"{info['format']} files cannot be compressed meaningfully by this service. Use the original format's export options.")
     if target is not None and target <= 0: raise CompressionError("Target size must be greater than zero.")
     src_size = src.stat().st_size
     if target and target >= src_size:
-        return {"path": str(src), "format": info["format"], "message": "Requested target is at least the original size; compression was skipped.", "warnings": [], "target_reached": False, "iterations": 0}
+        return {"path": str(src), "format": info["format"], "message": "Requested target is at least the original size; compression was skipped.", "warnings": [], "target_reached": src_size == target if mode == "exact" else True, "iterations": 0}
     if mode == "lossless" and info["format"] in {"MP4", "MOV", "MKV", "WebM", "AVI", "MP3", "WAV", "FLAC", "M4A", "AAC", "OGG"}:
         return {"path": str(src), "format": info["format"], "message": "Lossless-only mode: no lossless encoder is available for this container, so the original was retained unchanged.", "warnings": [], "target_reached": False, "iterations": 0}
     if cancelled(): raise CompressionError("Compression was cancelled.")
@@ -369,9 +412,14 @@ def compress(src: Path, filename: str, outdir: Path, target: int | None, mode: s
     else:
         raise CompressionError(f"{info['format']} is detectable but has no safe compression adapter installed.")
     actual = output.stat().st_size
-    if actual >= src_size and info["format"] in {"ZIP", "DOCX", "PPTX", "XLSX", "ODT", "ODS", "ODP", "EPUB"}:
-        # Do not ship a larger rewritten ZIP package.
-        return {"path": str(src), "format": info["format"], "message": "Recompression did not save space; returned the original unchanged.", "warnings": ["The contents are already compressed; further lossless reduction is unlikely."], "target_reached": False, "iterations": 1}
+    if cancelled():
+        raise CompressionError("Compression was cancelled.")
+    if actual >= src_size and output != src:
+        output, actual = src, src_size
+        message = "Recompression did not save space; returned the original unchanged."
+        warnings = ["The original content and metadata were retained."]
     reached = bool(target and (actual == target if mode == "exact" else actual <= target))
-    if target and not reached: message += " Best valid output is larger than the requested target; further reduction would need stronger quality loss or unsupported operations."
-    return {"path": str(output), "format": output.suffix.lstrip(".").upper(), "message": message, "warnings": warnings, "target_reached": reached, "iterations": locals().get("iterations", 1)}
+    if target and not reached:
+        message += " The measured output does not equal the exact target." if mode == "exact" else " Best valid output is larger than the requested target; further reduction would need stronger quality loss or unsupported operations."
+    output_format = info["format"] if output == src else EXTENSIONS.get(output.suffix.lower(), output.suffix.lstrip(".").upper())
+    return {"path": str(output), "format": output_format, "message": message, "warnings": warnings, "target_reached": reached, "iterations": locals().get("iterations", _clock.iterations or 1)}

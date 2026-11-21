@@ -1,0 +1,30 @@
+[hidden] { display: none !important; }
+@media (min-width: 721px) { .hero { align-items: start; } .hero-copy { padding-top: 48px; } }
+.batch-settings, .batch-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-top: 16px; }
+.batch-settings label { display: grid; gap: 5px; font-size: 11px; color: var(--ink); }
+.batch-settings select, .secondary-button { font: inherit; font-size: 11px; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; }
+.secondary-button { cursor: pointer; }
+.secondary-button:hover:not(:disabled) { border-color: var(--green); }
+button:disabled, input:disabled, select:disabled { cursor: not-allowed; opacity: .6; }
+.server-status { color: var(--green); font-size: 11px; line-height: 1.5; }
+.batch-summary { border-top: 1px solid var(--line); padding-top: 12px; color: var(--ink); font-size: 12px; line-height: 1.6; }
+.file-controls { grid-column: 1 / -1; }
+.file-controls label { display: flex; align-items: center; gap: 5px; }
+.workspace-footer { gap: 10px; flex-wrap: wrap; background: transparent !important; }
+.action-buttons { flex-shrink: 0; }
+.toast { max-width: calc(100vw - 32px); width: max-content; }
+#preview-content { height: 100%; padding-top: 26px; }
+.preview-dialog audio { position: static; width: 100%; }
+html[data-theme="dark"] .preview-dialog { color: var(--ink); background: var(--panel); }
+html[data-theme="dark"] .file-status, html[data-theme="dark"] .file-sub, html[data-theme="dark"] .result-stats, html[data-theme="dark"] .secure-note, html[data-theme="dark"] .drop-caption, html[data-theme="dark"] .drop-foot, html[data-theme="dark"] .file-controls label { color: #b6c3b8; }
+html[data-theme="dark"] .result-stats strong { color: var(--ink); }
+html[data-theme="dark"] .file-status.done, html[data-theme="dark"] .action-buttons .single-run { color: #9ad6ae; }
+html[data-theme="dark"] .file-status.error { color: #ffaaa7; }
+@media (max-width: 430px) {
+  .batch-settings { align-items: stretch; }
+  .batch-settings label { flex: 1 1 100px; min-width: 0; }
+  .batch-settings select { width: 100%; }
+  .file-controls .target-kind, .file-controls .mode-select { max-width: 166px; }
+  .batch-actions .secondary-button { flex: 1 1 auto; }
+  .drop-foot { max-width: 100%; padding: 0 8px; text-align: center; line-height: 1.5; }
+}

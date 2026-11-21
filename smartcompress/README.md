@@ -6,6 +6,12 @@ SmartCompress is a format-aware file compressor with a responsive browser UI and
 
 Requirements: Python 3.11+ (tested with 3.12), FFmpeg with `ffmpeg` and `ffprobe` on `PATH` for media conversion. Pillow, PyMuPDF, FastAPI, and Uvicorn are Python dependencies. No Node.js, database, Redis, Ghostscript, or qpdf is required.
 
+With Python available as `python`, run `./start.ps1`. It creates an isolated
+`.smartcompress-venv`, installs the locked runtime dependencies when needed, and
+starts the app at `http://127.0.0.1:8000`. Use `./start.ps1 -Port 8080` if port 8000
+is occupied. The first install needs internet access. This environment is separate
+from any older `.venv` that points to a removed Python installation.
+
 ```powershell
 cd D:\Project\Files_Compression
 py -3.12 -m venv .venv
@@ -47,6 +53,14 @@ For a public deployment, terminate HTTPS at a trusted reverse proxy, set `SMARTC
 
 ## Features and format limits
 
+The browser workspace includes automatic size selection, custom targets, shared
+batch presets (65%, 50% or 25% of each original), compression modes, a running
+savings summary, ZIP download and a CSV results report. Cancellation works during
+upload as well as processing; failed or cancelled files can be retried. A retry
+reuses a validated upload while its token is valid. Removing a file keeps other
+files' settings intact, including files with identical names. Reports contain
+sizes and format details without access tokens or server paths.
+
 | Category | Formats | Status and behavior |
 | --- | --- | --- |
 | Images | JPEG, PNG, WebP, GIF, BMP, TIFF, ICO | Pillow-backed. JPEG/WebP quality candidates and bounded image downscaling try a target; PNG has lossless optimization. GIF animation is retained, but palette/color changes may occur in lossy mode. BMP/TIFF/ICO become PNG. Lossless mode retains animated images and JPEG/WebP unchanged. |
@@ -60,7 +74,7 @@ Format detection uses signatures and container parsing for images, PDF, ZIP and 
 
 ## Target-size behavior
 
-The shared controller measures actual bytes and never pads, truncates, or replaces an original. Image compression tries quality levels and, for difficult targets, progressively smaller dimensions within five bounded scale candidates. The first valid candidate at or under target is returned; otherwise the smallest valid candidate is returned with a clear explanation. Exact mode succeeds only when the measured byte count equals the requested count. For video and audio, the target becomes a bitrate budget and FFmpeg adjusts through up to five bounded candidates; container overhead, minimum encoder bitrates, and codec behavior can prevent reaching it. PDF/package rewrites are lossless and do not degrade content to force a target. A target above the source size skips compression. “Smallest size” prefers lower image qualities; other lossy settings can still be needed for targets. Iteration counts reflect candidates evaluated.
+The shared controller measures actual bytes and never pads, truncates, or replaces an original. Image compression tries quality levels and, for difficult targets, progressively smaller dimensions within five bounded scale candidates. The first valid candidate at or under target is returned; otherwise the smallest valid candidate is returned with a clear explanation. Exact mode succeeds only when the measured byte count equals the requested count. For video and audio, the target becomes a bitrate budget and FFmpeg adjusts through up to five bounded candidates; container overhead, minimum encoder bitrates, and codec behavior can prevent reaching it. PDF/package rewrites are lossless and do not degrade content to force a target. A target above the source size skips compression. â€œSmallest sizeâ€ prefers lower image qualities; other lossy settings can still be needed for targets. Iteration counts reflect candidates evaluated.
 
 The implementation does not claim that all file types can hit arbitrary target sizes. It returns the best valid output it found, even if a difficult target is missed. Lossless mode preserves source image data where re-encoding would alter it; audio/video are returned unchanged because no verified lossless remux path is configured.
 
@@ -69,10 +83,10 @@ The implementation does not claim that all file types can hit arbitrary target s
 All routes are versioned under `/api/v1` and documented by the live OpenAPI schema.
 
 1. `POST /files` accepts multipart field `file`. The response contains a random `upload_id` and scoped `upload_token`.
-2. `POST /compression-jobs` accepts JSON `{ "upload_id": "…", "upload_token": "…", "target_bytes": 500000, "mode": "balanced" }`. Modes: `balanced`, `lossless`, `smallest`, `exact`.
+2. `POST /compression-jobs` accepts JSON `{ "upload_id": "â€¦", "upload_token": "â€¦", "target_bytes": 500000, "mode": "balanced" }`. Modes: `balanced`, `lossless`, `smallest`, `exact`.
 3. Poll `GET /compression-jobs/{job_id}` or subscribe to `/compression-jobs/{job_id}/events` (Server-Sent Events) using the `Authorization: Bearer <job_token>` header.
 4. `POST /compression-jobs/{job_id}/cancel` with the same header requests cancellation. FFmpeg checks cancellation while processing; short Pillow/PDF/archive operations are checked at phase boundaries.
-5. Download a completed result from `GET /compression-jobs/{job_id}/download` with the same header. The unguessable per-job token scopes access. Batch download accepts `{ "jobs": [{ "job_id": "…", "job_token": "…" }] }` at `/compression-jobs/batch-download`.
+5. Download a completed result from `GET /compression-jobs/{job_id}/download` with the same header. The unguessable per-job token scopes access. Batch download accepts `{ "jobs": [{ "job_id": "â€¦", "job_token": "â€¦" }] }` at `/compression-jobs/batch-download`.
 6. `GET /formats` reports the engine matrix; `GET /health` reports readiness.
 
 Files and job tokens are kept in process memory; restart invalidates tokens and removes expired artifacts. Use a durable queue, shared state store and object store before running multiple web processes or deploying a multi-host service. There is an in-process per-IP request cap and per-file size cap; public services should also add proxy-level abuse protection, persistent quotas and isolated worker containers. The application never executes uploaded files and subprocesses use argument arrays with `shell=False`.
@@ -85,7 +99,23 @@ python -m pytest -q
 python -m compileall services tests
 ```
 
-Tests use generated local fixtures; they do not fetch public sample files. FFmpeg media integration is reported by `/health`; the engine's media adapter requires the installed FFmpeg/ffprobe pair. A browser-level end-to-end suite and performance benchmark dataset are not included yet. Keep tests out of production deployment images if desired.
+Tests use generated local fixtures; they do not fetch public sample files. FFmpeg media integration is reported by `/health`; the engine's media adapter requires the installed FFmpeg/ffprobe pair. The repository includes browser integration tests; a performance benchmark dataset is not included yet. Keep tests out of production deployment images if desired.
+
+Browser integration tests use Chromium and an ASGI bridge to exercise the real
+upload, compression, preview and download API without opening a TCP server port:
+
+```powershell
+npm install
+npx playwright install chromium
+npm run check
+npm run test:browser
+```
+
+Node.js is needed only for these development checks. Set
+`SMARTCOMPRESS_TEST_PYTHON` to an environment's Python executable if it is not the
+default `python`. Screenshots and bridge files are generated under ignored `.audit/`.
+The GitHub workflow tests Python, browser flows and the Android build. An Android
+device/emulator flow and a performance benchmark dataset still need separate QA.
 
 ## Architecture
 
@@ -101,6 +131,11 @@ The UI uses a same-origin versioned API, so the compressor is independent of the
 Detailed references: [architecture](docs/ARCHITECTURE.md), [formats](docs/FORMATS.md), [API usage](docs/API.md), and [deployment and troubleshooting](docs/DEPLOYMENT.md).
 
 ## Mobile and desktop path
+
+The included [Android wrapper](android/README.md) supports file selection and
+authenticated single-result and batch downloads through Android's document saver.
+Its server URL can be configured at build time. It depends on a running HTTPS
+backend; it does not perform offline compression on the phone.
 
 - **Android/iOS:** build a React Native/Expo client that reuses the versioned API contract; upload with multipart, poll/SSE for job state, then save the returned download. The current browser app is not a native app. A local-only mobile mode needs native bindings for each codec, secure temporary storage, OS file-provider integration, memory limits and platform testing.
 - **Desktop:** wrap the static web UI in Tauri and point it at a local service or remote HTTPS backend. For offline local use, package the Python service and FFmpeg as signed platform-specific sidecars, set a private per-user temp directory, and implement installer/update/signing workflows. Alternatively, a Capacitor shell can host a remote or embedded web client, but it does not itself package the compression engine.
