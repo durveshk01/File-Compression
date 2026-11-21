@@ -12,8 +12,8 @@ android {
         applicationId 'com.smartcompress.app'
         minSdk 23
         targetSdk 35
-        versionCode 3
-        versionName '1.1.1'
+        versionCode 4
+        versionName '1.1.2'
         def home = project.findProperty('smartcompressHome') ?: 'https://smartcompress-8eq6.onrender.com/'
         if (!home.startsWith('https://') || home.contains('"') || home.contains('\\')) {
             throw new GradleException('smartcompressHome must be an HTTPS URL')

@@ -1,5 +1,9 @@
 # Changes
 
+## 1.1.2
+
+- Apply modern Android system-bar insets at the activity root so the WebView stays fully within the usable screen.
+
 ## 1.1.1
 
 - Restore UTF-8 punctuation and action labels damaged during publication.
