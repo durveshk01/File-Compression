@@ -51,9 +51,9 @@ function makeCard(file) {
   const record = { file, upload: null, job: null, status: 'ready', cancelled: false, removed: false, attempt: 0 };
   const card = document.createElement('article'); record.card = card; card.className = 'file-card';
   const name = safeName(file.name), extension = safeName(file.name.split('.').pop().slice(0, 5).toUpperCase());
-  card.innerHTML = `<span class="file-icon" aria-hidden="true">${extension}</span><div class="file-meta"><div class="file-name" title="${name}">${name}</div><div class="file-sub">${size(file.size)} Â· Waiting for file check</div></div><button class="remove-file" type="button" aria-label="Remove ${name}">Ã—</button>
+  card.innerHTML = `<span class="file-icon" aria-hidden="true">${extension}</span><div class="file-meta"><div class="file-name" title="${name}">${name}</div><div class="file-sub">${size(file.size)} · Waiting for file check</div></div><button class="remove-file" type="button" aria-label="Remove ${name}">×</button>
     <div class="file-controls"><label>Goal <select class="target-kind" aria-label="Size goal for ${name}"><option value="auto">Automatic size</option><option value="custom">Custom target</option></select></label><label>Target <input class="target-value" type="number" min="0.001" step="any" value="1" aria-label="Target size for ${name}"></label><select class="target-unit" aria-label="Target size unit"><option value="MB">MB</option><option value="KB">KB</option><option value="GB">GB</option></select><label>Mode <select class="mode-select" aria-label="Compression mode for ${name}"><option value="balanced">Balanced</option><option value="lossless">Lossless only</option><option value="smallest">Smallest size</option><option value="exact">Exact target attempt</option></select></label></div>
-    <div class="file-actions"><span class="file-status">Ready to inspect file contents</span><span class="action-buttons"><button class="preview-button preview-result" type="button" hidden>Preview</button><button class="single-run" type="button">Compress this file â†—</button></span></div>`;
+    <div class="file-actions"><span class="file-status">Ready to inspect file contents</span><span class="action-buttons"><button class="preview-button preview-result" type="button" hidden>Preview</button><button class="single-run" type="button">Compress this file ↗</button></span></div>`;
   $('.remove-file', card).addEventListener('click', () => removeRecord(record));
   $('.single-run', card).addEventListener('click', () => busy(record) ? cancelRecord(record) : record.status === 'completed' ? download(record) : runRecord(record));
   $('.preview-result', card).addEventListener('click', () => previewFile(record));
@@ -76,7 +76,7 @@ function cardFor(record) { return record.removed ? null : record.card; }
 function sync() {
   $('#file-count').textContent = String(state.files.length);
   runAll.disabled = state.batchRunning || !state.files.some(runnable);
-  runAll.querySelector('span').textContent = state.batchRunning ? 'Compressing batchâ€¦' : 'Compress files';
+  runAll.querySelector('span').textContent = state.batchRunning ? 'Compressing batch…' : 'Compress files';
   const completed = state.files.filter(record => record.status === 'completed');
   $('#batch-download').hidden = completed.length < 2;
   $('#export-results').hidden = !completed.length;
@@ -85,16 +85,16 @@ function sync() {
   const original = completed.reduce((sum, record) => sum + record.job.original_size, 0);
   const final = completed.reduce((sum, record) => sum + record.job.final_size, 0);
   const active = state.files.filter(busy).length;
-  summary.textContent = `${completed.length} of ${state.files.length} completed${active ? ` Â· ${active} active` : ''}${completed.length ? ` Â· ${size(original)} â†’ ${size(final)} Â· ${final <= original ? 'Saved' : 'Larger by'} ${size(Math.abs(original - final))}` : ''}`;
+  summary.textContent = `${completed.length} of ${state.files.length} completed${active ? ` · ${active} active` : ''}${completed.length ? ` · ${size(original)} → ${size(final)} · ${final <= original ? 'Saved' : 'Larger by'} ${size(Math.abs(original - final))}` : ''}`;
 }
 function paintStatus(record, message = '') {
   const card = cardFor(record); if (!card) return;
   if (message) record.message = message;
   const status = $('.file-status', card);
   status.className = `file-status ${record.status === 'failed' ? 'error' : record.status === 'completed' ? 'done' : ''}`;
-  status.textContent = record.message || ({ uploading: 'Uploading and validatingâ€¦', queued: 'Queued for compressionâ€¦', processing: 'Processing. This may take a momentâ€¦', completed: 'Compression complete', failed: 'Could not compress this file', cancelled: 'Compression cancelled. You can try again.' }[record.status] || 'Ready');
-  if (record.upload) $('.file-sub', card).textContent = `${record.upload.format} Â· ${size(record.file.size)} Â· ${record.upload.category}`;
-  $('.single-run', card).textContent = busy(record) ? 'Cancel' : record.status === 'completed' ? 'Download â†“' : ['failed', 'cancelled'].includes(record.status) ? 'Try again â†—' : 'Compress this file â†—';
+  status.textContent = record.message || ({ uploading: 'Uploading and validating…', queued: 'Queued for compression…', processing: 'Processing. This may take a moment…', completed: 'Compression complete', failed: 'Could not compress this file', cancelled: 'Compression cancelled. You can try again.' }[record.status] || 'Ready');
+  if (record.upload) $('.file-sub', card).textContent = `${record.upload.format} · ${size(record.file.size)} · ${record.upload.category}`;
+  $('.single-run', card).textContent = busy(record) ? 'Cancel' : record.status === 'completed' ? 'Download ↓' : ['failed', 'cancelled'].includes(record.status) ? 'Try again ↗' : 'Compress this file ↗';
   $('.preview-result', card).hidden = !(record.status === 'completed' && ['Image', 'Video', 'Audio', 'PDF'].includes(record.job.category));
   let bar = $('.file-progress', card);
   if (busy(record) && !bar) { bar = document.createElement('div'); bar.className = 'file-progress'; bar.innerHTML = '<span></span>'; card.appendChild(bar); }
@@ -226,7 +226,7 @@ async function previewFile(record) {
       for (const [label, source, bytes] of [['Original', originalURL, record.file.size], ['Compressed', url, record.job.final_size]]) {
         const figure = document.createElement('figure'), caption = document.createElement('figcaption');
         const media = document.createElement(record.job.category === 'Image' ? 'img' : record.job.category === 'Video' ? 'video' : 'audio');
-        caption.textContent = `${label} Â· ${size(bytes)}`; media.src = source;
+        caption.textContent = `${label} · ${size(bytes)}`; media.src = source;
         if (record.job.category === 'Image') media.alt = `${label} image preview`; else media.controls = true;
         figure.append(caption, media); element.append(figure);
       }
@@ -283,10 +283,10 @@ async function loadFormats() {
   try {
     const response = await fetch(`${API}/formats`); if (!response.ok) throw new Error('Server unavailable');
     const data = await response.json(); state.maxUploadBytes = data.limits.max_upload_bytes;
-    $('.drop-foot').textContent = `UP TO ${size(state.maxUploadBytes).toUpperCase()} PER FILE Â· YOUR FILES ARE NEVER PUBLIC`;
-    $('#format-detail').textContent = data.formats.map(item => `${item.category} â€” ${item.support}: ${item.note}`).join(' Â· ');
-    $('#server-status').textContent = data.formats.some(item => item.support === 'Unavailable') ? 'Ready Â· media engine unavailable' : 'All engines ready';
+    $('.drop-foot').textContent = `UP TO ${size(state.maxUploadBytes).toUpperCase()} PER FILE · YOUR FILES ARE NEVER PUBLIC`;
+    $('#format-detail').textContent = data.formats.map(item => `${item.category} — ${item.support}: ${item.note}`).join(' · ');
+    $('#server-status').textContent = data.formats.some(item => item.support === 'Unavailable') ? 'Ready · media engine unavailable' : 'All engines ready';
     $('#privacy-retention').textContent = `${data.limits.retention_hours} hours`;
-  } catch { $('#server-status').textContent = 'Server unavailable Â· try again shortly'; $('#format-detail').textContent = 'Could not load available engines. Check the server connection.'; }
+  } catch { $('#server-status').textContent = 'Server unavailable · try again shortly'; $('#format-detail').textContent = 'Could not load available engines. Check the server connection.'; }
 }
 sync(); loadFormats();

@@ -1,5 +1,11 @@
 # Changes
 
+## 1.1.1
+
+- Restore UTF-8 punctuation and action labels damaged during publication.
+- Add a rendered-text regression check for the encoding issue.
+- Keep Android page content clear of status/navigation bars and use readable system icons.
+
 ## 1.1.0
 
 - Reject timed-out archives instead of returning partial contents; preserve EPUB
