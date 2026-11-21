@@ -1,0 +1,11 @@
+{
+  "name": "smartcompress-browser-tests",
+  "private": true,
+  "scripts": {
+    "test:browser": "node --test tests/browser.test.cjs",
+    "check": "node --check apps/web/app.js"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

@@ -15,6 +15,13 @@ Signatures/container parsing override browser MIME. Extensions that conflict wit
 
 ## Native dependencies
 
+Animations above 500 frames or the total decoded pixel budget are rejected in
+lossy mode; lossless mode retains the source. Multipage TIFF files are retained
+unchanged in every mode to avoid turning pages into an animation. ODF and EPUB
+formats are identified from their bounded `mimetype` entry; that entry remains
+first and uncompressed when repackaged. Archive timeouts fail instead of returning
+an incomplete package. Outputs that do not shrink are retained unchanged.
+
 - **Required for video/audio:** FFmpeg build with `libx264`, AAC and `libmp3lame`, plus `ffprobe`. The adapter uses H.264/AAC MP4 output and MP3 output. Hardware encoders are not assumed.
 - **Not required:** Ghostscript, qpdf, Redis, a database, Node.js or a frontend build tool.
 - **Optional formats not enabled:** AVIF/HEIC require codecs in Pillow; those inputs are not declared supported by this adapter.

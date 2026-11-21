@@ -34,6 +34,13 @@ flowchart LR
 
 State and upload/job tokens are in process memory. Run only one API process as configured. Before scaling horizontally, replace in-memory state with a shared job store and queue, then private object storage. Workers should be isolated, unprivileged, and limited for CPU, memory, disk, processes and network egress.
 
+Cleanup protects active upload folders, running jobs and their source folders.
+Completed results own their own file, even when the engine keeps the original, so
+source retention cannot break a ready download. Result retention starts when
+processing finishes. Worker slots remain held until their encoder thread exits;
+FFmpeg drains both output pipes with bounded polling and kills/reaps the process
+on timeout or cancellation. GET status polling does not consume the mutation quota.
+
 ## Client evolution
 
 Expo/React Native can use the multipart and JSON APIs directly, then save downloaded results with platform file APIs. Tauri can wrap the same browser UI; offline desktop mode would package a Python service and FFmpeg as signed platform sidecars. Neither wrapper automatically makes this web build a native application. Local-only mobile processing requires native codec bindings and separate memory, sandbox and file-provider work.
