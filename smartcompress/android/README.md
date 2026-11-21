@@ -11,12 +11,13 @@ and serve the matching web UI. Configure another trusted HTTPS server at build t
 
 ```powershell
 cd android
-gradle -PsmartcompressHome=https://your-server.example/ assembleDebug
+./gradlew -PsmartcompressHome=https://your-server.example/ assembleDebug
 ```
 
 Use JDK 17, Gradle 8.9, Android SDK platform 35 and build tools 35.0.0.
-The repository currently uses a system Gradle installation; there is no Gradle
-wrapper. The GitHub workflow installs the required Gradle and SDK versions.
+The repository includes a Gradle 8.9 wrapper with distribution checksum verification.
+Use `./gradlew` on Linux/macOS or `./gradlew.bat` on Windows. The GitHub workflow
+installs the Android SDK and verifies the wrapper.
 The debug APK is produced in `app/build/outputs/apk/debug/`. Use a signed release
 build and your own keystore before distribution.
 

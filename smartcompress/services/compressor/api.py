@@ -78,7 +78,7 @@ async def lifespan(app: FastAPI):
             pass
 
 
-app = FastAPI(title="SmartCompress API", version="1.0.0", description="Format-aware compression API with scoped temporary file tokens. Files are automatically deleted after the configured retention period.", lifespan=lifespan)
+app = FastAPI(title="SmartCompress API", version="1.1.0", description="Format-aware compression API with scoped temporary file tokens. Files are automatically deleted after the configured retention period.", lifespan=lifespan)
 origins = [x.strip() for x in os.getenv("SMARTCOMPRESS_CORS_ORIGINS", "http://localhost:8000").split(",") if x.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type", "Authorization"], allow_credentials=False)
 

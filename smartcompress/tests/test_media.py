@@ -22,3 +22,27 @@ def test_ffmpeg_video_conversion_has_valid_stream_and_duration(tmp_path):
     assert {s["codec_type"] for s in meta["streams"]} == {"video", "audio"}
     assert 1.2 < float(meta["format"]["duration"]) < 1.8
     assert result["format"] == "MP4"
+
+
+def test_ffmpeg_audio_target_produces_valid_mp3(tmp_path):
+    source = tmp_path / "fixture.wav"
+    subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", str(source)], check=True, timeout=30, shell=False)
+    out = tmp_path / "out"; out.mkdir()
+    result = compress(source, source.name, out, 20000, "balanced", 30)
+    probe = subprocess.run([FFPROBE, "-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name", "-of", "json", result["path"]], capture_output=True, text=True, check=True, timeout=10, shell=False)
+    meta = json.loads(probe.stdout)
+    assert meta["streams"][0]["codec_name"] == "mp3"
+    assert result["format"] == "MP3"
+    assert result["target_reached"]
+    assert .8 < float(meta["format"]["duration"]) < 1.3
+
+
+def test_lossless_audio_keeps_original_bytes(tmp_path):
+    source = tmp_path / "fixture.wav"
+    subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", str(source)], check=True, timeout=30, shell=False)
+    original = source.read_bytes()
+    out = tmp_path / "out"; out.mkdir()
+    result = compress(source, source.name, out, 1, "lossless", 30)
+    assert result["path"] == str(source)
+    assert source.read_bytes() == original
+    assert not result["target_reached"]

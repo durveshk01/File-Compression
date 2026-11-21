@@ -30,7 +30,7 @@ jobs:
       - run: python -m pytest -q -p no:cacheprovider
       - run: python -m ruff check services tests --select F
       - run: python -m compileall -q services tests
-      - run: npm install --no-audit --no-fund
+      - run: npm ci --no-audit --no-fund
       - run: npx playwright install --with-deps chromium
       - run: npm run check && npm run test:browser
       - uses: actions/upload-artifact@v4
@@ -56,6 +56,10 @@ jobs:
         with:
           gradle-version: '8.9'
       - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
-      - run: gradle --no-daemon assembleDebug
+      - run: ./gradlew --no-daemon assembleDebug lintDebug
       - run: javac -d ../.audit/java-tests app/src/main/java/com/smartcompress/app/DownloadRequest.java ../tests/DownloadRequestTest.java
       - run: java -cp ../.audit/java-tests com.smartcompress.app.DownloadRequestTest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SmartCompress-debug-apk
+          path: smartcompress/android/app/build/outputs/apk/debug/app-debug.apk
