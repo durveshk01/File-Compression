@@ -254,10 +254,10 @@ def _image_candidates(src: Path, outdir: Path, target: int | None, lossless: boo
             except (OSError, ValueError) as exc:
                 raise CompressionError(f"The image encoder could not create a valid output ({type(exc).__name__}).") from exc
             size = dest.stat().st_size
-            if best is None or size < best[0]: best = (size, dest, f"Quality {quality}, {candidate_image.width} Ã— {candidate_image.height}")
+            if best is None or size < best[0]: best = (size, dest, f"Quality {quality}, {candidate_image.width} × {candidate_image.height}")
             if target and size <= target:
                 im.close()
-                return dest, f"Target reached at quality {quality}, {candidate_image.width} Ã— {candidate_image.height}.", warnings
+                return dest, f"Target reached at quality {quality}, {candidate_image.width} × {candidate_image.height}.", warnings
             if time.monotonic() - _clock.started > max_seconds: break
         if time.monotonic() - _clock.started > max_seconds: break
     assert best

@@ -26,7 +26,7 @@ Invoke-RestMethod -Method Post "http://127.0.0.1:8000/api/v1/compression-jobs/$(
 
 `GET /api/v1/compression-jobs/{job_id}/events` is an SSE endpoint (`event: status`) for clients that can set an Authorization header. Browser `EventSource` cannot set custom headers, so the supplied browser UI uses short-interval polling with Bearer headers.
 
-Batch download accepts a JSON body with 1â€“50 `{job_id, job_token}` pairs at `POST /api/v1/compression-jobs/batch-download`. Also available: `GET /api/v1/formats`, `GET /api/v1/health`, `/openapi.json`, `/docs`, and `/redoc`.
+Batch download accepts a JSON body with 1–50 `{job_id, job_token}` pairs at `POST /api/v1/compression-jobs/batch-download`. Also available: `GET /api/v1/formats`, `GET /api/v1/health`, `/openapi.json`, `/docs`, and `/redoc`.
 
 Batch download validates every selected token and rejects unavailable or unfinished
 results with HTTP 409. Duplicate filenames become `name (2).ext`, `name (3).ext`,

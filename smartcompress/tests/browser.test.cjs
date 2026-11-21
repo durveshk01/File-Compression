@@ -51,6 +51,7 @@ const file = name => ({ name, mimeType: 'image/png', buffer: png });
 
 test('settings survive removing another file with the same name', async () => {
   await page.goto('http://smartcompress.test/');
+  assert.ok(!(await page.locator('.drop-foot').innerText()).includes('\u00c2'));
   await page.locator('#file-input').setInputFiles([file('same.png'), file('same.png')]);
   const second = page.locator('.file-card').nth(1);
   await second.locator('.target-kind').selectOption('custom');
@@ -95,7 +96,7 @@ test('automatic compression, previews, downloads and shared batch settings', asy
   await page.waitForFunction(() => document.querySelectorAll('.file-status.done, .file-status.error').length === 2);
   assert.equal(await page.locator('.file-status.done').count(), 2, await page.locator('.file-status').allTextContents());
   assert.match(await page.locator('#batch-summary').innerText(), /2.*completed/);
-  assert.equal(await page.locator('.single-run').first().innerText(), 'Download â†“');
+  assert.equal(await page.locator('.single-run').first().innerText(), 'Download ↓');
   const csvDownload = page.waitForEvent('download');
   await page.locator('#export-results').click();
   const csv = await csvDownload;
